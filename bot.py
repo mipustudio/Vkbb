@@ -12,7 +12,7 @@ TOKEN = os.environ.get("VK_TOKEN")
 GROUP_ID = int(os.environ.get("VK_GROUP_ID", "237158911"))
 API_VERSION = "5.199"
 ADMIN_ID = int(os.environ.get("ADMIN_ID", "554458501"))
-GOOGLE_SCRIPT_URL = os.environ.get("GOOGLE_SCRIPT_URL", "")
+GOOGLE_SCRIPT_URL = os.environ.get("GOOGLE_SCRIPT_URL", "https://script.google.com/macros/s/AKfycbwPqQC5jIMAH-gRHvARmg-u8PmqmvKBphyz-wYvtCZyfAbq7qxwqiFOiblE5aGX_LhX/exec")
 
 # База данных
 DB_FILE = "bot.db"
@@ -132,6 +132,24 @@ def send_to_google_sheets(data):
         print(f"  Ошибка Google Sheets: {e}")
         return False
 
+def delete_all_from_google_sheets():
+    try:
+        response = requests.post(GOOGLE_SCRIPT_URL, json={"action": "delete_all"}, timeout=15)
+        print(f"  Google Sheets delete_all: {response.status_code}")
+        return True
+    except Exception as e:
+        print(f"  Ошибка Google Sheets delete: {e}")
+        return False
+
+def delete_from_google_sheets_by_number(number):
+    try:
+        response = requests.post(GOOGLE_SCRIPT_URL, json={"action": "delete_by_number", "number": number}, timeout=15)
+        print(f"  Google Sheets delete #{number}: {response.status_code}")
+        return True
+    except Exception as e:
+        print(f"  Ошибка Google Sheets delete: {e}")
+        return False
+
 # ==================== АДМИН КОМАНДЫ ====================
 
 ADMIN_COMMANDS = ["/выкл рег", "/вкл рег", "/выкл пред", "/вкл пред", "/рассылка", "/роз", "/стат", "/очист пред", "/очист всё", "/очист юзер", "/сброс"]
@@ -205,7 +223,8 @@ def handle_admin_command(vk, peer_id, text):
         c.execute("UPDATE users SET has_submission = 0")
         conn.commit()
         conn.close()
-        send_message(vk, peer_id, f"🗑️ Удалено {count} предложений\nВсе участники могут подать заново")
+        delete_all_from_google_sheets()
+        send_message(vk, peer_id, f"🗑️ Удалено {count} предложений\nВсе участники могут подать заново\nGoogle Таблица очищена")
         return
 
     # Очистить ВСЕХ участников
@@ -216,7 +235,8 @@ def handle_admin_command(vk, peer_id, text):
         c.execute("DELETE FROM users")
         conn.commit()
         conn.close()
-        send_message(vk, peer_id, f"🗑️ Удалено {users_count} участников и {subs_count} предложений\nБаза данных полностью очищена")
+        delete_all_from_google_sheets()
+        send_message(vk, peer_id, f"🗑️ Удалено {users_count} участников и {subs_count} предложений\nБаза данных и Google Таблица полностью очищены")
         return
 
     # Очистить участника по номеру
@@ -235,7 +255,8 @@ def handle_admin_command(vk, peer_id, text):
             c.execute("DELETE FROM users WHERE number = ?", (number,))
             conn.commit()
             conn.close()
-            send_message(vk, peer_id, f"🗑️ Участник #{number} и его предложение удалены")
+            delete_from_google_sheets_by_number(number)
+            send_message(vk, peer_id, f"🗑️ Участник #{number} и его предложение удалены\nУдалён из Google Таблицы")
         else:
             conn.close()
             send_message(vk, peer_id, f"Участник #{number} не найден")
