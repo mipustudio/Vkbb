@@ -134,7 +134,7 @@ def send_to_google_sheets(data):
 
 # ==================== АДМИН КОМАНДЫ ====================
 
-ADMIN_COMMANDS = ["/выкл рег", "/вкл рег", "/выкл пред", "/вкл пред", "/рассылка", "/роз", "/стат"]
+ADMIN_COMMANDS = ["/выкл рег", "/вкл рег", "/выкл пред", "/вкл пред", "/рассылка", "/роз", "/стат", "/очист пред", "/очист всё", "/очист юзер", "/сброс"]
 
 def is_admin_command(text):
     text_lower = text.lower()
@@ -196,6 +196,69 @@ def handle_admin_command(vk, peer_id, text):
 
         conn.close()
         send_message(vk, peer_id, stat_text)
+        return
+
+    # Очистить ВСЕ предложения
+    if text_lower == "/очист пред":
+        count = c.execute("SELECT COUNT(*) FROM submissions").fetchone()[0]
+        c.execute("DELETE FROM submissions")
+        c.execute("UPDATE users SET has_submission = 0")
+        conn.commit()
+        conn.close()
+        send_message(vk, peer_id, f"🗑️ Удалено {count} предложений\nВсе участники могут подать заново")
+        return
+
+    # Очистить ВСЕХ участников
+    if text_lower == "/очист всё":
+        users_count = c.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+        subs_count = c.execute("SELECT COUNT(*) FROM submissions").fetchone()[0]
+        c.execute("DELETE FROM submissions")
+        c.execute("DELETE FROM users")
+        conn.commit()
+        conn.close()
+        send_message(vk, peer_id, f"🗑️ Удалено {users_count} участников и {subs_count} предложений\nБаза данных полностью очищена")
+        return
+
+    # Очистить участника по номеру
+    if text_lower.startswith("/очист юзер"):
+        parts = text.split()
+        if len(parts) < 2:
+            conn.close()
+            send_message(vk, peer_id, "Использование: /очист юзер номер\nНапример: /очист юзер 101")
+            return
+
+        number = parts[1]
+        user = c.execute("SELECT * FROM users WHERE number = ?", (number,)).fetchone()
+
+        if user:
+            c.execute("DELETE FROM submissions WHERE number = ?", (number,))
+            c.execute("DELETE FROM users WHERE number = ?", (number,))
+            conn.commit()
+            conn.close()
+            send_message(vk, peer_id, f"🗑️ Участник #{number} и его предложение удалены")
+        else:
+            conn.close()
+            send_message(vk, peer_id, f"Участник #{number} не найден")
+        return
+
+    # Сбросить статус подачи
+    if text_lower.startswith("/сброс"):
+        parts = text.split()
+        if len(parts) < 2:
+            conn.close()
+            send_message(vk, peer_id, "Использование: /сброс номер\nНапример: /сброс 101")
+            return
+
+        number = parts[1]
+        c.execute("UPDATE users SET has_submission = 0 WHERE number = ?", (number,))
+        conn.commit()
+        affected = c.rowcount
+        conn.close()
+
+        if affected > 0:
+            send_message(vk, peer_id, f"✅ Статус участника #{number} сброшен — может подать заново")
+        else:
+            send_message(vk, peer_id, f"Участник #{number} не найден")
         return
 
     if text_lower.startswith("/рассылка"):
@@ -586,13 +649,17 @@ def main():
         print("БОТ ЗАПУЩЕН!")
         print("=" * 50)
         print("\nКоманды админа:")
-        print("  /стат       - статистика")
-        print("  /вкл рег    - включить регистрацию")
-        print("  /выкл рег   - выключить регистрацию")
-        print("  /вкл пред   - включить приём предложений")
-        print("  /выкл пред  - выключить приём предложений")
-        print("  /рассылка текст  - рассылка всем")
-        print("  /роз 5      - розыгрыш призов")
+        print("  /стат           - статистика")
+        print("  /вкл рег        - включить регистрацию")
+        print("  /выкл рег       - выключить регистрацию")
+        print("  /вкл пред       - включить приём предложений")
+        print("  /выкл пред      - выключить приём предложений")
+        print("  /рассылка текст - рассылка всем")
+        print("  /роз 5          - розыгрыш призов")
+        print("  /очист пред     - удалить все предложения")
+        print("  /очист всё      - удалить всех участников")
+        print("  /очист юзер 101 - удалить участника по номеру")
+        print("  /сброс 101      - сбросить статус подачи")
         print("=" * 50)
 
         while True:
