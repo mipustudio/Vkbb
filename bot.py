@@ -56,11 +56,11 @@ def init_db():
             user_id INTEGER PRIMARY KEY,
             number TEXT UNIQUE NOT NULL,
             registered_at TEXT NOT NULL,
-            has_submission INTEGER DEFAULT 0
+            current_direction_index INTEGER DEFAULT 0
         )
     """)
 
-    # Таблица предложений
+    # Создать таблицу предложений (если нет)
     c.execute("""
         CREATE TABLE IF NOT EXISTS submissions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -72,6 +72,29 @@ def init_db():
             FOREIGN KEY (user_id) REFERENCES users(user_id)
         )
     """)
+
+    # Миграция: если старая колонка has_submission существует — добавим current_direction_index
+    try:
+        c.execute("ALTER TABLE users ADD COLUMN current_direction_index INTEGER DEFAULT 0")
+    except sqlite3.OperationalError:
+        pass  # Колонка уже существует
+
+    # Миграция: перенесём данные из has_submission в current_direction_index
+    try:
+        c.execute("""
+            UPDATE users
+            SET current_direction_index = 5
+            WHERE has_submission = 1
+              AND current_direction_index = 0
+        """)
+    except sqlite3.OperationalError:
+        pass  # Колонки has_submission уже нет или миграция завершена
+
+    # Удаляем старую колонку has_submission (sqlite не поддерживает DROP COLUMN в старых версиях)
+    try:
+        c.execute("ALTER TABLE users DROP COLUMN has_submission")
+    except sqlite3.OperationalError:
+        pass  # Колонки уже нет или нельзя удалить
 
     # Настройки по умолчанию
     c.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('registration_enabled', 'true')")
@@ -107,6 +130,18 @@ def get_topics_keyboard():
     for i, direction in enumerate(TOPICS.keys(), 1):
         buttons.append([{"action": {"type": "text", "label": f"{NUMBER_EMOJIS[i-1]} {direction}", "payload": {"topic": i}}}])
     return {"one_time": True, "buttons": buttons}
+
+def get_current_topic_keyboard(current_index):
+    """Клавиатура только с текущим направлением."""
+    topics = list(TOPICS.keys())
+    if current_index >= len(topics):
+        return None
+    direction = topics[current_index]
+    emoji = NUMBER_EMOJIS[current_index]
+    return {
+        "one_time": True,
+        "buttons": [[{"action": {"type": "text", "label": f"{emoji} {direction}", "payload": {}}}]]
+    }
 
 # ==================== УТИЛИТЫ ====================
 
@@ -197,14 +232,16 @@ def handle_admin_command(vk, peer_id, text):
     if text_lower == "/стат":
         total_users = c.execute("SELECT COUNT(*) FROM users").fetchone()[0]
         total_submissions = c.execute("SELECT COUNT(*) FROM submissions").fetchone()[0]
-        has_submission = c.execute("SELECT COUNT(*) FROM users WHERE has_submission = 1").fetchone()[0]
+        completed_users = c.execute("SELECT COUNT(*) FROM users WHERE current_direction_index >= 5").fetchone()[0]
+        in_progress = c.execute("SELECT COUNT(*) FROM users WHERE current_direction_index > 0 AND current_direction_index < 5").fetchone()[0]
 
         # По направлениям
         rows = c.execute("SELECT direction, COUNT(*) as cnt FROM submissions GROUP BY direction").fetchall()
 
         stat_text = f"📊 СТАТИСТИКА ФОРУМА\n\n"
         stat_text += f"👥 Участников: {total_users}\n"
-        stat_text += f"✅ Подавших предложения: {has_submission}\n"
+        stat_text += f"✅ Завершили все направления: {completed_users}\n"
+        stat_text += f"🔄 В процессе: {in_progress}\n"
         stat_text += f"📝 Всего предложений: {total_submissions}\n\n"
 
         if rows:
@@ -220,7 +257,7 @@ def handle_admin_command(vk, peer_id, text):
     if text_lower == "/очист пред":
         count = c.execute("SELECT COUNT(*) FROM submissions").fetchone()[0]
         c.execute("DELETE FROM submissions")
-        c.execute("UPDATE users SET has_submission = 0")
+        c.execute("UPDATE users SET current_direction_index = 0")
         conn.commit()
         conn.close()
         delete_all_from_google_sheets()
@@ -271,13 +308,13 @@ def handle_admin_command(vk, peer_id, text):
             return
 
         number = parts[1]
-        c.execute("UPDATE users SET has_submission = 0 WHERE number = ?", (number,))
+        c.execute("UPDATE users SET current_direction_index = 0 WHERE number = ?", (number,))
         conn.commit()
         affected = c.rowcount
         conn.close()
 
         if affected > 0:
-            send_message(vk, peer_id, f"✅ Статус участника #{number} сброшен — может подать заново")
+            send_message(vk, peer_id, f"✅ Статус участника #{number} сброшен — может подать заново по всем направлениям")
         else:
             send_message(vk, peer_id, f"Участник #{number} не найден")
         return
@@ -498,6 +535,8 @@ def handle_message(vk, user_id, peer_id, text):
 
     # ========== ЗАРЕГИСТРИРОВАН ==========
     user_data = dict(user)
+    current_dir_index = user_data.get("current_direction_index", 0)
+    topics_list = list(TOPICS.keys())
 
     if text == "📝 Подать предложение":
         if not sub_enabled:
@@ -509,31 +548,61 @@ def handle_message(vk, user_id, peer_id, text):
             conn.close()
             return
 
-        if user_data["has_submission"]:
+        # Если все направления пройдены
+        if current_dir_index >= len(topics_list):
             send_message(vk, peer_id,
-                "Вы уже подали предложение!\n\n"
-                "Если хотите подать ещё одно — обратитесь к администратору.",
+                "✅ Вы уже подали предложения по всем направлениям!\n\n"
+                "Спасибо за активное участие!",
                 keyboard=get_user_keyboard()
             )
             conn.close()
             return
 
+        # Сразу показываем описание текущего направления и просим ввести предложение
+        current_direction = topics_list[current_dir_index]
+        emoji = NUMBER_EMOJIS[current_dir_index]
+
         send_message(vk, peer_id,
-            "📝 ПОДАЧА ПРЕДЛОЖЕНИЯ\n\n"
-            "Выберите направление:",
-            keyboard=get_topics_keyboard()
+            f"📝 ПОДАЧА ПРЕДЛОЖЕНИЯ\n\n"
+            f"Направление {current_dir_index + 1} из {len(topics_list)}\n"
+            f"{emoji} {current_direction}\n\n"
+            f"Описание: {TOPICS[current_direction]}\n\n"
+            f"────────────────────\n\n"
+            f"Напишите ваше предложение:"
         )
-        user_states[user_id] = {"step": "select_topic"}
+        user_states[user_id] = {"step": "waiting_proposal"}
         conn.close()
         return
 
     if text == "👤 Мой профиль":
-        status = "✅ Предложение подано" if user_data["has_submission"] else "⏳ Ещё не подано"
+        submissions_count = c.execute("SELECT COUNT(*) FROM submissions WHERE user_id = ?", (user_id,)).fetchone()[0]
+
+        completed = min(current_dir_index, len(topics_list))
+
+        if current_dir_index >= len(topics_list):
+            status = "✅ Все направления пройдены"
+        elif current_dir_index == 0:
+            status = "⏳ Ещё не подано"
+        else:
+            status = f"🔄 В процессе"
+
+        progress = ""
+        for i in range(len(topics_list)):
+            if i < current_dir_index:
+                progress += f"  {NUMBER_EMOJIS[i]} ✅ {topics_list[i]}\n"
+            elif i == current_dir_index:
+                progress += f"  {NUMBER_EMOJIS[i]} ⏳ Текущее\n"
+            else:
+                progress += f"  {NUMBER_EMOJIS[i]} 🔒 Ожидает\n"
+
         send_message(vk, peer_id,
             f"👤 ПРОФИЛЬ\n\n"
             f"Номер: {user_data['number']}\n"
             f"Зарегистрирован: {user_data['registered_at']}\n"
-            f"Статус: {status}",
+            f"Статус: {status}\n"
+            f"Заполнено: {completed}/{len(topics_list)}\n\n"
+            f"📊 Прогресс по направлениям:\n{progress}\n"
+            f"Всего предложений: {submissions_count}",
             keyboard=get_user_keyboard()
         )
         conn.close()
@@ -557,43 +626,19 @@ def handle_message(vk, user_id, peer_id, text):
     if user_id in user_states:
         state = user_states[user_id].get("step")
 
-        if state == "select_topic":
-            topics = list(TOPICS.keys())
-            topic_index = -1
-
-            try:
-                topic_index = int(text) - 1
-            except ValueError:
-                for i, direction in enumerate(topics):
-                    if direction in text:
-                        topic_index = i
-                        break
-
-            if topic_index < 0 or topic_index >= len(topics):
-                send_message(vk, peer_id, "Неверное направление. Выберите из кнопок:", keyboard=get_topics_keyboard())
-                conn.close()
-                return
-
-            direction = topics[topic_index]
-            user_states[user_id]["direction"] = direction
-            user_states[user_id]["step"] = "waiting_proposal"
-
-            send_message(vk, peer_id,
-                f"Вы выбрали: {direction}\n\n"
-                f"Описание: {TOPICS[direction]}\n\n"
-                f"Напишите ваше предложение:"
-            )
-            conn.close()
-            return
-
         if state == "waiting_proposal":
-            direction = user_states[user_id]["direction"]
+            topics_list = list(TOPICS.keys())
+            current_index = user_data.get("current_direction_index", 0)
+            direction = topics_list[current_index]
             now = time.strftime("%Y-%m-%d %H:%M:%S")
 
             # Сохраняем предложение
             c.execute("INSERT INTO submissions (user_id, number, direction, proposal, timestamp) VALUES (?, ?, ?, ?, ?)",
                      (user_id, user_data["number"], direction, text, now))
-            c.execute("UPDATE users SET has_submission = 1 WHERE user_id = ?", (user_id,))
+
+            # Увеличиваем индекс текущего направления
+            new_index = user_data.get("current_direction_index", 0) + 1
+            c.execute("UPDATE users SET current_direction_index = ? WHERE user_id = ?", (new_index, user_id))
             conn.commit()
             conn.close()
 
@@ -603,20 +648,43 @@ def handle_message(vk, user_id, peer_id, text):
             send_to_google_sheets({
                 "number": user_data["number"],
                 "user_id": user_id,
+                "direction_num": f"{new_index}/{len(topics_list)}",
                 "direction": direction,
                 "proposal": text,
                 "timestamp": now
             })
 
-            send_message(vk, peer_id,
-                f"✅ Ваше предложение принято!\n\n"
-                f"Номер: {user_data['number']}\n"
-                f"Тема: {direction}\n\n"
-                f"Предложение:\n{text}\n\n"
-                f"Спасибо за участие!",
-                keyboard=get_user_keyboard()
-            )
-            print(f"  Предложение: Номер={user_data['number']}, Тема={direction}")
+            # Проверяем, остались ли ещё направления
+            topics_list = list(TOPICS.keys())
+            if new_index >= len(topics_list):
+                # Все направления пройдены
+                send_message(vk, peer_id,
+                    f"✅ Ваше предложение по теме «{direction}» принято!\n\n"
+                    f"Номер: {user_data['number']}\n"
+                    f"Тема: {direction}\n\n"
+                    f"Предложение:\n{text}\n\n"
+                    f"🎉 Поздравляем! Вы подали предложения по всем направлениям!\n"
+                    f"Спасибо за активное участие!",
+                    keyboard=get_user_keyboard()
+                )
+            else:
+                # Есть ещё направления
+                next_direction = topics_list[new_index]
+                next_emoji = NUMBER_EMOJIS[new_index]
+                send_message(vk, peer_id,
+                    f"✅ Ваше предложение по теме «{direction}» принято!\n\n"
+                    f"Номер: {user_data['number']}\n"
+                    f"Тема: {direction}\n\n"
+                    f"Предложение:\n{text}\n\n"
+                    f"────────────────────\n\n"
+                    f"📊 Прогресс: {new_index} из {len(topics_list)}\n\n"
+                    f"Следующее направление:\n"
+                    f"{next_emoji} {next_direction}\n\n"
+                    f"Нажмите «Подать предложение», чтобы продолжить.",
+                    keyboard=get_user_keyboard()
+                )
+
+            print(f"  Предложение: Номер={user_data['number']}, Тема={direction}, Прогресс={new_index}/{len(topics_list)}")
             return
 
     # Непонятное сообщение

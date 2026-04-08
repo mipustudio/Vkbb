@@ -1,0 +1,2 @@
+['user_id', 'number', 'registered_at', 'has_submission']
+[(554458501, '401', '2026-04-05 16:58:03', 1)]

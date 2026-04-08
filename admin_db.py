@@ -26,10 +26,12 @@ def show_stats():
     c = conn.cursor()
     total = c.execute("SELECT COUNT(*) FROM users").fetchone()[0]
     subs = c.execute("SELECT COUNT(*) FROM submissions").fetchone()[0]
-    has_sub = c.execute("SELECT COUNT(*) FROM users WHERE has_submission = 1").fetchone()[0]
+    completed = c.execute("SELECT COUNT(*) FROM users WHERE current_direction_index >= 5").fetchone()[0]
+    in_progress = c.execute("SELECT COUNT(*) FROM users WHERE current_direction_index > 0 AND current_direction_index < 5").fetchone()[0]
     print(f"\n👥 Участников: {total}")
     print(f"📝 Предложений: {subs}")
-    print(f"✅ Подавших: {has_sub}")
+    print(f"✅ Завершили все направления: {completed}")
+    print(f"🔄 В процессе: {in_progress}")
     conn.close()
 
 def show_users():
@@ -41,7 +43,13 @@ def show_users():
     else:
         print(f"\n👥 Участники ({len(users)}):")
         for u in users:
-            status = "✅" if u["has_submission"] else "⏳"
+            current = u.get("current_direction_index", 0)
+            if current >= 5:
+                status = "✅ Завершил"
+            elif current > 0:
+                status = f"🔄 {current}/5"
+            else:
+                status = "⏳ Не начал"
             print(f"  {status} Номер: {u['number']} | ID: {u['user_id']} | Дата: {u['registered_at']}")
     conn.close()
 
@@ -62,7 +70,7 @@ def clear_submissions():
     if confirm.lower() == "да":
         conn = get_db()
         conn.execute("DELETE FROM submissions")
-        conn.execute("UPDATE users SET has_submission = 0")
+        conn.execute("UPDATE users SET current_direction_index = 0")
         conn.commit()
         conn.close()
         print("✅ Все предложения удалены")
@@ -104,12 +112,12 @@ def reset_submission():
     number = input("\nВведите номер участника для сброса статуса: ")
     conn = get_db()
     c = conn.cursor()
-    c.execute("UPDATE users SET has_submission = 0 WHERE number = ?", (number,))
+    c.execute("UPDATE users SET current_direction_index = 0 WHERE number = ?", (number,))
     conn.commit()
     affected = c.rowcount
     conn.close()
     if affected > 0:
-        print(f"✅ Статус участника #{number} сброшен — может подать предложение заново")
+        print(f"✅ Статус участника #{number} сброшен — может подать предложения заново по всем направлениям")
     else:
         print("Участник не найден")
 
