@@ -6,6 +6,10 @@ import json
 import os
 import random
 import sqlite3
+from dotenv import load_dotenv
+
+# Загрузка переменных из .env файла
+load_dotenv()
 
 # Настройки из переменных окружения (env)
 TOKEN = os.environ.get("VK_TOKEN")
